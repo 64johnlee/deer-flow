@@ -145,11 +145,14 @@ async def update_mcp_configuration(request: McpConfigUpdateRequest) -> McpConfig
         # Load current config to preserve skills configuration
         current_config = get_extensions_config()
 
-        # Convert request to dict format for JSON serialization
-        config_data = {
-            "mcpServers": {name: server.model_dump() for name, server in request.mcp_servers.items()},
-            "skills": {name: {"enabled": skill.enabled} for name, skill in current_config.skills.items()},
-        }
+        # Read existing file to preserve unknown top-level keys (e.g. mcpInterceptors)
+        try:
+            with open(config_path, "r", encoding="utf-8") as _rf:
+                config_data: dict = json.load(_rf)
+        except (FileNotFoundError, json.JSONDecodeError):
+            config_data = {}
+        config_data["mcpServers"] = {name: server.model_dump() for name, server in request.mcp_servers.items()}
+        config_data["skills"] = {name: {"enabled": skill.enabled} for name, skill in current_config.skills.items()}
 
         # Write the configuration to file
         with open(config_path, "w", encoding="utf-8") as f:
