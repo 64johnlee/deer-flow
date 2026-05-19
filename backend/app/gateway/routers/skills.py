@@ -326,7 +326,8 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest, config: App
 
         try:
             with open(config_path, "r", encoding="utf-8") as _rf:
-                config_data: dict = json.load(_rf)
+                _raw = json.load(_rf)
+                config_data: dict = _raw if isinstance(_raw, dict) else {}
         except (FileNotFoundError, json.JSONDecodeError):
             config_data = {}
         config_data["mcpServers"] = {name: server.model_dump() for name, server in extensions_config.mcp_servers.items()}

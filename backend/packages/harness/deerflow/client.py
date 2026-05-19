@@ -926,7 +926,8 @@ class DeerFlowClient:
 
         try:
             with open(config_path, "r", encoding="utf-8") as _rf:
-                config_data: dict = json.load(_rf)
+                _raw = json.load(_rf)
+                config_data: dict = _raw if isinstance(_raw, dict) else {}
         except (FileNotFoundError, json.JSONDecodeError):
             config_data = {}
         config_data["mcpServers"] = mcp_servers
@@ -995,7 +996,8 @@ class DeerFlowClient:
 
         try:
             with open(config_path, "r", encoding="utf-8") as _rf:
-                config_data: dict = json.load(_rf)
+                _raw = json.load(_rf)
+                config_data: dict = _raw if isinstance(_raw, dict) else {}
         except (FileNotFoundError, json.JSONDecodeError):
             config_data = {}
         config_data["mcpServers"] = {n: s.model_dump() for n, s in extensions_config.mcp_servers.items()}

@@ -148,7 +148,8 @@ async def update_mcp_configuration(request: McpConfigUpdateRequest) -> McpConfig
         # Read existing file to preserve unknown top-level keys (e.g. mcpInterceptors)
         try:
             with open(config_path, "r", encoding="utf-8") as _rf:
-                config_data: dict = json.load(_rf)
+                _raw = json.load(_rf)
+                config_data: dict = _raw if isinstance(_raw, dict) else {}
         except (FileNotFoundError, json.JSONDecodeError):
             config_data = {}
         config_data["mcpServers"] = {name: server.model_dump() for name, server in request.mcp_servers.items()}
