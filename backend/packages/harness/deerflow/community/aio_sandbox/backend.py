@@ -2,15 +2,44 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
 
+import httpx
 import requests
 
 from .sandbox_info import SandboxInfo
 
 logger = logging.getLogger(__name__)
+
+
+async def async_wait_for_sandbox_ready(sandbox_url: str, timeout: int = 30) -> bool:
+    """Poll sandbox health endpoint until ready or timeout (async-native).
+
+    Identical semantics to :func:`wait_for_sandbox_ready` but uses
+    ``httpx.AsyncClient`` and ``asyncio.sleep`` so the calling event loop is
+    not blocked while waiting for sandbox startup.
+
+    Args:
+        sandbox_url: URL of the sandbox (e.g. http://k3s:30001).
+        timeout: Maximum time to wait in seconds.
+
+    Returns:
+        True if sandbox is ready, False otherwise.
+    """
+    start_time = time.time()
+    async with httpx.AsyncClient() as client:
+        while time.time() - start_time < timeout:
+            try:
+                response = await client.get(f"{sandbox_url}/v1/sandbox", timeout=5)
+                if response.status_code == 200:
+                    return True
+            except httpx.RequestError:
+                pass
+            await asyncio.sleep(1)
+    return False
 
 
 def wait_for_sandbox_ready(sandbox_url: str, timeout: int = 30) -> bool:
