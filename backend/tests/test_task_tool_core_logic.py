@@ -581,6 +581,10 @@ def test_task_tool_polling_safety_timeout(monkeypatch):
     config.timeout_seconds = 1
     events = []
 
+    class _DummyCleanupTask:
+        def add_done_callback(self, _cb):
+            pass
+
     monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
     monkeypatch.setattr(
         task_tool_module,
@@ -596,6 +600,8 @@ def test_task_tool_polling_safety_timeout(monkeypatch):
     )
     monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
     monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(task_tool_module.asyncio, "create_task", lambda coro: (coro.close(), _DummyCleanupTask())[1])
+    monkeypatch.setattr(task_tool_module, "request_cancel_background_task", lambda _: None)
     monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [])
 
     output = _run_task_tool(
@@ -734,15 +740,19 @@ def test_cleanup_called_on_timed_out(monkeypatch):
 def test_cleanup_not_called_on_polling_safety_timeout(monkeypatch):
     """Verify cleanup_background_task is NOT called on polling safety timeout.
 
-    This prevents race conditions where the background task is still running
-    but the polling loop gives up. The cleanup should happen later when the
-    executor completes and sets a terminal status.
+    The task may still be running in the background, so immediate cleanup would
+    race with the executor. Instead, cancellation is signalled and a deferred
+    cleanup is scheduled to remove the record once the executor finishes.
     """
     config = _make_subagent_config()
     # Keep max_poll_count small for test speed: (1 + 60) // 5 = 12
     config.timeout_seconds = 1
     events = []
     cleanup_calls = []
+
+    class _DummyCleanupTask:
+        def add_done_callback(self, _cb):
+            pass
 
     monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
     monkeypatch.setattr(
@@ -759,6 +769,8 @@ def test_cleanup_not_called_on_polling_safety_timeout(monkeypatch):
     )
     monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
     monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(task_tool_module.asyncio, "create_task", lambda coro: (coro.close(), _DummyCleanupTask())[1])
+    monkeypatch.setattr(task_tool_module, "request_cancel_background_task", lambda _: None)
     monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [])
     monkeypatch.setattr(
         task_tool_module,
@@ -775,8 +787,68 @@ def test_cleanup_not_called_on_polling_safety_timeout(monkeypatch):
     )
 
     assert output.startswith("Task polling timed out after 0 minutes")
-    # cleanup should NOT be called because the task is still RUNNING
+    # cleanup_background_task should NOT be called directly — the task is still
+    # RUNNING, so the deferred cleanup handles removal after the executor stops.
     assert cleanup_calls == []
+
+
+def test_polling_safety_timeout_cancels_and_schedules_deferred_cleanup(monkeypatch):
+    """Polling safety timeout must signal cancel and schedule deferred cleanup.
+
+    When the polling loop gives up (poll_count > max_poll_count), the background
+    task may still be running. The fix signals cooperative cancellation via
+    request_cancel_background_task and schedules a deferred cleanup task so the
+    record is removed from _background_tasks once the executor terminates.
+    """
+    app_config = object()
+    config = _make_subagent_config()
+    config.timeout_seconds = 1
+    events = []
+    cancel_requests: list[str] = []
+    scheduled_cleanups: list = []
+
+    class _DummyCleanupTask:
+        def add_done_callback(self, _cb):
+            pass
+
+    def fake_create_task(coro):
+        scheduled_cleanups.append(coro)
+        coro.close()
+        return _DummyCleanupTask()
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(
+        task_tool_module,
+        "SubagentExecutor",
+        type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
+    )
+    monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda *, app_config: ["general-purpose"])
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _, *, app_config: config)
+    monkeypatch.setattr(
+        task_tool_module,
+        "get_background_task_result",
+        lambda _: _make_result(FakeSubagentStatus.RUNNING, ai_messages=[]),
+    )
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(task_tool_module.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(task_tool_module, "request_cancel_background_task", lambda task_id: cancel_requests.append(task_id))
+    monkeypatch.setattr(task_tool_module, "cleanup_background_task", lambda _: None)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **kwargs: [])
+
+    output = _run_task_tool(
+        runtime=_make_runtime(app_config=app_config),
+        description="执行任务",
+        prompt="never finish",
+        subagent_type="general-purpose",
+        tool_call_id="tc-poll-timeout-cancel",
+    )
+
+    assert output.startswith("Task polling timed out after 0 minutes")
+    # Cooperative cancellation must be signalled so the executor stops.
+    assert cancel_requests == ["tc-poll-timeout-cancel"]
+    # A deferred cleanup task must be scheduled to remove the record later.
+    assert len(scheduled_cleanups) == 1
 
 
 def test_cleanup_scheduled_on_cancellation(monkeypatch):
