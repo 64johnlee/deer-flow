@@ -79,10 +79,14 @@ stop_all() {
     pkill -f "next-server" 2>/dev/null || true
     nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" -s quit 2>/dev/null || true
     sleep 1
-    pkill -9 nginx 2>/dev/null || true
+    # pkill -f matches the full command line so it works on macOS where nginx
+    # worker/master processes expose titles like "nginx: master process nginx -g ..."
+    # that `pkill nginx` (name-only) may not match exactly.
+    pkill -f "nginx -g" 2>/dev/null || true
     # Force-kill any survivors still holding the service ports
     _kill_port 8001
     _kill_port 3000
+    _kill_port 2026
     ./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
     echo "✓ All services stopped"
 }
